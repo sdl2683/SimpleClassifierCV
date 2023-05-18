@@ -24,7 +24,7 @@ import cv2
 # from cutmix.utils import CutMixCrossEntropyLoss
 from sklearn.model_selection import StratifiedKFold
 import datetime
-
+import timm
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
@@ -213,12 +213,9 @@ def test(model, test_loader, device):
     return df
         
 
-li = os.listdir(r'G:\讯飞比赛\苹果病害图像识别挑战赛\苹果病害图像识别挑战赛公开数据\main\data\test')
-test_data = pd.DataFrame(data={'img_path':li})
-test_data.to_csv('test_data.csv',index=False)
 
 batch_size = 4
-test_path = 'test.csv'
+test_path = 'test_data.csv'
 img_path = 'data/test/'
 
 test_dataset = LeavesData(test_path, img_path, class2num, num2class, get_train_transforms, get_valid_transforms, 'test')
@@ -231,18 +228,63 @@ test_loader = torch.utils.data.DataLoader(
     )
 
 
-# model = resnet50_model(len(class2num.keys()))
-# model.load_state_dict(torch.load('/home/sunduolin/competitions/apple_disease/main/checkpoints/model_100.pth', map_location=torch.device('cpu')))
+# dic = {
+#     'densenet169': 'densenet508',
+#     'efficientnet_b0': 'EfficientNet213',
+#     'efficientnet_b1': 'EfficientNet301',
+#     'efficientnet_b2': 'EfficientNet301',
+#     'efficientnet_b3': 'EfficientNet340',
+    
+# }
 
-resnet34 = resnet34_model(len(class2num.keys()))
-resnet34.load_state_dict(torch.load(r'G:\讯飞比赛\苹果病害图像识别挑战赛\苹果病害图像识别挑战赛公开数据\main\checkpoints\20230513\ResNet114_20230513_epoch10_fold6.pth'))
+def test_model_kfold(model_name, weight_fold_path):
+    weight_list = os.listdir(weight_fold_path)
+    cur_weight_paths = []
+    model = timm.create_model(model_name, num_classes=9)
+    print(f'Getting weight path of {model_name}....')
+    for each in weight_list:
+        try:
+            model.load_state_dict(torch.load(opj(weight_fold_path, each)))
+            
+            if 'epoch10' in each:
+                print(f'{each} is the weight of {model_name}')
+                cur_weight_paths.append(opj(weight_fold_path, each))
+
+        except RuntimeError:
+            continue
+    
+    for pth in cur_weight_paths:
+        print(f'current weight is {pth}')
+        acc = pth.split('/')[-1].split('_')[-1].replace('accuracy', '').replace('.pth', '')
+        acc = round(float(acc), 4)
+        if acc < 0.96:
+            continue
+        fold = pth.split('/')[-1].split('_')[3]
+        print(f'the accuracy of this weight is {acc}')
+
+        model.load_state_dict(torch.load(pth))
+    
+        device = 'cuda:5'
+
+        df = test(model, test_loader, device)
+
+        df['label'] = df['label'].apply(lambda x:'d'+str(x+1))
+
+        df.to_csv(f'submission_{model_name}_acc{acc}_{fold}.csv', index=False)
+
+def test_models_kfold(model_names, weight_fold_path):
+    for model_name in model_names:
+        print(f'testing {model_name}...')
+        test_model_kfold(model_name, weight_fold_path)
+
+# model_names = ['densenet169', 'efficientnet_b0']
+model_names = ['efficientnet_b4','mobilenetv3_large_075', 'mobilenetv3_large_100']
+
+weight_fold_path = 'checkpoints/20230518'
+test_models_kfold(model_names, weight_fold_path)
 
 
-device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-
-df = test(resnet34, test_loader, device)
-
-df['label'] = df['label'].apply(lambda x:'d'+str(x+1))
-
-df.to_csv(f'submission_resnet34.csv', index=False)
+# model_name = 'densenet169'
+# model = timm.create_model(model_name,num_classes=9)
+# model.load_state_dict(torch.load('checkpoints/20230517/DenseNet508_20230517_epoch5_fold0_accuracy0.97347316471314.pth'))
 

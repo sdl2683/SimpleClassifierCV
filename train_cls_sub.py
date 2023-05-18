@@ -29,9 +29,9 @@ import random, copy
 # from cutmix.utils import CutMixCrossEntropyLoss
 import timm
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3,4,5'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+
 
 def seed_torch(seed=42):
     random.seed(seed)
@@ -132,35 +132,6 @@ def get_valid_transforms():
 def get_model_num_conv(model):
     return len([each[0] for each in model.named_parameters()])
 
-
-# resnext18模型
-def resnet18_model_gray(num_classes, feature_extract = False, use_pretrained=True):
-
-    model_ft = models.resnet18(pretrained=use_pretrained)
-    model_ft.conv1 = nn.Conv2d(1, 64, (7,7), (2,2), (3,3),bias=False)
-    set_parameter_requires_grad(model_ft, feature_extract)
-    num_ftrs = model_ft.fc.in_features
-    model_ft.fc = nn.Sequential(nn.Linear(num_ftrs, 256), 
-                                nn.ReLU(),
-                                nn.Linear(256, 128), 
-                                nn.ReLU(),
-                                nn.Linear(128,num_classes))
-
-    return model_ft
-
-def resnet34_model(num_classes, feature_extract = False, use_pretrained=True):
-    
-    model_ft = models.resnet34(pretrained=use_pretrained)
-    set_parameter_requires_grad(model_ft, feature_extract)
-    num_ftrs = model_ft.fc.in_features
-    model_ft.fc = nn.Sequential(nn.Linear(num_ftrs, 256), 
-                                nn.ReLU(),
-                                nn.Linear(256, 128), 
-                                nn.ReLU(),
-                                nn.Linear(128,num_classes))
-
-    return model_ft
-
 def resnet50_model(num_classes, feature_extract = False, use_pretrained=True):
 
     model_ft = models.resnet50(pretrained=use_pretrained)
@@ -232,12 +203,14 @@ def densenet161_model(num_classes, feature_extract = False, use_pretrained=True)
 
 def train_model(model, fold_idx, train_iter, val_iter, num_epoches, loss, optimizer, scheduler, device):
     model = model.to(device)
-    num_convs = get_model_num_conv(model)
     print('training on', device)
+
+    model_name = model.default_cfg['architecture']
 
     for epoch in range(1, num_epoches+1):
         metric = Accumulator(3)
         for X, y in tqdm(train_iter):
+            
             optimizer.zero_grad()
             X, y = X.to(device), y.to(device)
             y_hat = model(X)
@@ -248,46 +221,7 @@ def train_model(model, fold_idx, train_iter, val_iter, num_epoches, loss, optimi
                 metric.add(l * X.shape[0], accuracy(y_hat, y), X.shape[0])
             train_l = metric[0] / metric[2]
             train_acc = metric[1] / metric[2]
-        scheduler.step()
-        
-        test_l, val_acc = evaluate_accuracy_gpu(model, val_iter, loss)
-        print('epoch:{}/{}, train_loss:{:.4f}, train_acc:{:.4f}, val_acc:{:.4f}, learning_rate:{}'.format(epoch, num_epoches, train_l, train_acc, val_acc, scheduler.get_last_lr()))
-        
-        today = get_today_time()
-        if not ope(f'checkpoints/{today}/'):
-            os.makedirs(f'checkpoints/{today}/')
-            
-        if epoch % 10 == 0:
-            val_acc_small = round(val_acc, 4)            
-            torch.save(model.state_dict(), f'checkpoints/{today}/{model.__class__.__name__}{num_convs}_{today}_epoch{epoch}_fold{fold_idx}_accuracy{val_acc_small}.pth')
-        
-        if not ope(f'train_logs/{today}/'):
-            os.makedirs(f'train_logs/{today}/')
-            
-        with open(f'train_logs/{today}/train_logs_{model.__class__.__name__}{num_convs}_{today}_fold{fold_idx}.json', 'a') as f:
-            f.write(str({'epoch':epoch, 'train_loss':train_l, 'train_acc':train_acc, 'val_acc':val_acc})+'\n')
-        
-def train_model_gpus(model, fold_idx, train_iter, val_iter, num_epoches, loss, optimizer, scheduler, num_gpus):
-    devices = [d2l.try_gpu(i) for i in range(num_gpus)]
-    model = model.to(devices[0])
-    num_convs = get_model_num_conv(model)
-    print('training on', devices)
 
-    model = nn.DataParallel(model, device_ids=devices)
-
-    for epoch in range(1, num_epoches+1):
-        metric = Accumulator(3)
-        for X, y in tqdm(train_iter):
-            optimizer.zero_grad()
-            X, y = X.to(devices[0]), y.to(devices[0])
-            y_hat = model(X)
-            l = loss(y_hat, y).mean()
-            l.backward()
-            optimizer.step()
-            with torch.no_grad():
-                metric.add(l * X.shape[0], accuracy(y_hat, y), X.shape[0])
-            train_l = metric[0] / metric[2]
-            train_acc = metric[1] / metric[2]
         scheduler.step()
         
         test_l, val_acc = evaluate_accuracy_gpu(model, val_iter, loss)
@@ -298,13 +232,15 @@ def train_model_gpus(model, fold_idx, train_iter, val_iter, num_epoches, loss, o
             os.makedirs(f'checkpoints/{today}/')
             
         if epoch % 5 == 0:            
-            torch.save(model.state_dict(), f'checkpoints/{today}/{model.__class__.__name__}{num_convs}_{today}_epoch{epoch}_fold{fold_idx}_accuracy{val_acc}.pth')
+            torch.save(model.state_dict(), 'checkpoints/{}/{}_{}_epoch{}_fold{}_accuracy{:.4f}.pth'.format(today, model_name, today, epoch, fold_idx, val_acc))
         
         if not ope(f'train_logs/{today}/'):
             os.makedirs(f'train_logs/{today}/')
             
-        with open(f'train_logs/{today}/train_logs_{model.__class__.__name__}{num_convs}_{today}_fold{fold_idx}.json', 'a') as f:
+        with open(f'train_logs/{today}/train_logs_{model_name}_{today}_fold{fold_idx}.json', 'a') as f:
             f.write(str({'epoch':epoch, 'train_loss':train_l, 'train_acc':train_acc, 'val_acc':val_acc})+'\n')
+        
+
 
 # 继承pytorch的dataset，创建自己的
 class LeavesData(Dataset):
@@ -381,7 +317,7 @@ class LeavesData(Dataset):
         img_as_img = transform(image=img_as_img)['image']
         
         if self.mode == 'test':
-            return img_as_img
+            return single_image_name, img_as_img
         else:
             # 得到图像的 string label
             label = self.label_arr[index]
@@ -417,6 +353,7 @@ def evaluate_accuracy_gpu(net, data_iter, loss, device=None):
     # No. of correct predictions, no. of predictions
     metric = Accumulator(3)
 
+    print(f'Validation on {device}')
     with torch.no_grad():
         for X, y in tqdm(data_iter):
             if isinstance(X, list):
@@ -430,19 +367,41 @@ def evaluate_accuracy_gpu(net, data_iter, loss, device=None):
     return metric[1] / metric[2], metric[0] / metric[2]
 
 
+def test_model(model, test_loader, device):
+    assert device is not None
+    
+    img_paths, y_preds = [], []
+    model = model.to(device)
+    model.eval()
+    print(f'test on {device}')
+    for img_path, x in tqdm(test_loader):
+        x = x.to(device)
+        y_hat = model(x)
+        
+        y_hat = y_hat.argmax(dim=1)
+        
+        img_paths.extend(list(img_path))
+        y_preds.extend(y_hat.detach().cpu().numpy().tolist())
+    
+    df = pd.DataFrame(data={'uuid':img_paths, 'label':y_preds})
+    return df
+
 class CFG:
     train_path = 'train_data.csv'
     test_path = 'test_data.csv'
-    img_path = 'data/train/'
-    learning_rate = 3e-5
+    train_img_path = 'data/train/'
+    test_img_path = 'data/test/'
+    learning_rate = 4e-3
     weight_decay = 1e-3
-    num_epoch = 20
+    num_epoch = 10
     k = 5
     seed = 990511
 
 seed_torch(seed=CFG.seed)
 
 def train_model_kfold(model, bs, optimizer, scheduler, loss, skf, train_data, device):
+    model_name = model.default_cfg['architecture']
+
     num_convs = get_model_num_conv(model)
     for fold_idx, (train_ids, val_ids) in enumerate(skf.split(df['img_path'], df['label'])):
         print(f'K-Fold:\t{fold_idx}')
@@ -453,11 +412,13 @@ def train_model_kfold(model, bs, optimizer, scheduler, loss, skf, train_data, de
             os.makedirs(today)
         
         train_data = pd.concat([train_subset, val_subset], axis=0)
-        train_data.to_csv(f'{today}/train_data_{model.__class__.__name__}{num_convs}_fold{fold_idx}.csv', index=False)
+        train_data.to_csv(f'{today}/train_data_{model_name}_fold{fold_idx}.csv', index=False)
         
-        train_dataset = LeavesData(CFG.train_path, CFG.img_path, class2num, num2class, get_train_transforms, get_valid_transforms, mode='train', valid_ratio=0.2)
-        val_dataset = LeavesData(CFG.train_path, CFG.img_path, class2num, num2class, get_train_transforms, get_valid_transforms, mode='valid', valid_ratio=0.2)
-
+        val_ratio = 1 / skf.n_splits
+        train_dataset = LeavesData(CFG.train_path, CFG.train_img_path, class2num, num2class, get_train_transforms, get_valid_transforms, mode='train', valid_ratio=val_ratio)
+        val_dataset = LeavesData(CFG.train_path, CFG.train_img_path, class2num, num2class, get_train_transforms, get_valid_transforms, mode='valid', valid_ratio=val_ratio)
+        test_dataset = LeavesData(CFG.test_path, CFG.test_img_path, class2num, num2class, get_train_transforms, get_valid_transforms, mode='test')
+        
         # train_dataset = CutMix(train_dataset, num_class=len(class2num.keys()), beta=1.0, prob=0.5, num_mix=2)
         # val_dataset = CutMix(val_dataset, num_class=len(class2num.keys()), beta=1.0, prob=0.5, num_mix=2)
         
@@ -473,22 +434,55 @@ def train_model_kfold(model, bs, optimizer, scheduler, loss, skf, train_data, de
                 shuffle=False
             )
         
-        train_model(model, fold_idx, train_loader, val_loader, CFG.num_epoch, loss, optimizer, scheduler, device)
+        test_loader = torch.utils.data.DataLoader(
+                dataset=test_dataset,
+                batch_size=bs, 
+                shuffle=False
+            )
+        
+        train_model(model, fold_idx, train_loader, val_loader, CFG.num_epoch, loss, optimizer, scheduler, device=device)
 
+        submission = test_model(model, test_loader, device)
+        
+        today = get_today_time()
+        if not ope(f'submission/{today}'):
+            os.makedirs(f'submission/{today}')
+        
+        submission['label'] = submission['label'].apply(lambda x:'d'+str(x+1))
+        submission.to_csv('submission/{}/submission_{}_fold{}.csv'.format(today, model_name, fold_idx), index=False)
+        
+        
 
 def train_models_kfold(models_list, skf, train_data):
-    for model, bs, device in models_list:
+    for model, bs, device, lr in models_list:
         
-        optimizer = torch.optim.AdamW(model.parameters(), lr = CFG.learning_rate, weight_decay=0.02)
+        optimizer = torch.optim.AdamW(model.parameters(), lr = lr, weight_decay=0.02)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=CFG.num_epoch)
         loss = nn.CrossEntropyLoss()
         # loss = CutMixCrossEntropyLoss(True)
         
-
         train_model_kfold(model, bs, optimizer, scheduler, loss, skf, train_data, device)
 
 
-
+class Trainer():
+    def __init__(self, model_name, num_classes, batch_size=32, lr=3e-4, num_epoches=10, skf=StratifiedKFold(n_splits=CFG.k), optimizer='AdamW', loss=nn.CrossEntropyLoss(), device='cuda:0', checkpoints_path=None):
+        if checkpoints_path is not None:
+            assert ope(checkpoints_path)
+            self.trainer = timm.create_model(model_name, num_classes=num_classes)
+            self.trainer.load_state_dict(torch.load(checkpoints_path))
+        else:
+            self.trainer = timm.create_model(model_name, pretrained=True, num_classes=num_classes)
+        
+        self.batch_size = batch_size
+        self.lr = lr
+        self.skf = skf
+        self.optimizer = optimizer
+        self.loss = loss
+        self.device = device
+    
+    def train(self):
+        pass
+    
 
 
 skf = StratifiedKFold(n_splits=CFG.k)
@@ -498,7 +492,7 @@ df = pd.read_csv(CFG.train_path)
 resnext = resnext50_model(len(class2num.keys()))
 # resnext.load_state_dict(torch.load('checkpoints/20230512/ResNet_20230512_epoch10_fold6.pth'))
 
-# efficientnet = efficientnet_v2s_model(len(class2num.keys()))
+efficientnet = efficientnet_v2s_model(len(class2num.keys()))
 # efficientnet.load_state_dict(torch.load('checkpoints/20230512/EfficientNet_20230512_epoch5_fold3.pth'))
 
 
@@ -509,9 +503,11 @@ densnet161 = densenet161_model(len(class2num.keys()))
 # resnet34 = resnet34_model(len(class2num.keys()))
 # resnet34.load_state_dict(torch.load(r'G:\讯飞比赛\苹果病害图像识别挑战赛\苹果病害图像识别挑战赛公开数据\main\checkpoints\20230513\ResNet114_20230513_epoch10_fold8.pth'))
 
+
+
 resnet18 = timm.create_model('resnet18', pretrained=True, num_classes=len(class2num.keys()))
 
-resnext101 = timm.create_model('resnext101_32x4d', pretrained=True, num_classes=len(class2num.keys()))
+resnext101 = timm.create_model('resnext101_32x4d', num_classes=len(class2num.keys()))
 resnext101.load_state_dict(torch.load('checkpoints/20230517/ResNet314_20230517_epoch10_fold4_accuracy0.9611351017890192.pth'))
 
 resnext50 = timm.create_model('resnext50_32x4d',pretrained=True,num_classes=len(class2num.keys()))
@@ -520,18 +516,37 @@ efficientnet_b0 = timm.create_model('efficientnet_b0',pretrained=True,num_classe
 efficientnet_b1 = timm.create_model('efficientnet_b1',pretrained=True,num_classes=len(class2num.keys()))
 efficientnet_b2 = timm.create_model('efficientnet_b2',pretrained=True,num_classes=len(class2num.keys()))
 efficientnet_b3 = timm.create_model('efficientnet_b3',pretrained=True,num_classes=len(class2num.keys()))
+efficientnet_b4 = timm.create_model('efficientnet_b4',pretrained=True,num_classes=len(class2num.keys()))
 
 densnet121d = timm.create_model('densenet169',pretrained=True,num_classes=len(class2num.keys()))
 
+mobilenetv3_large_075 = timm.create_model('mobilenetv3_large_075',pretrained=True,num_classes=len(class2num.keys()))
+mobilenetv3_large_100 = timm.create_model('mobilenetv3_large_100',pretrained=True,num_classes=len(class2num.keys()))
+
+seresnet101 = timm.create_model('seresnet101',pretrained=True,num_classes=len(class2num.keys()))
+
+seresnext50 = timm.create_model('seresnext50_32x4d',pretrained=True,num_classes=len(class2num.keys()))
+seresnext101 = timm.create_model('seresnext101_32x4d',pretrained=True,num_classes=len(class2num.keys()))
+seresnext101.load_state_dict(torch.load('checkpoints/20230518/seresnext101_32x4d_20230518_epoch10_fold0_accuracy0.6644.pth'))
 # model_list = [[densnet121, 16], [densnet161, 8], [efficientnet, 16], [resnet34, 64]]
-model_list = [[resnext101, 24, 'cuda:0']]
-# model_list = [[resnext50, 16, 'cuda:2']]
+
+
+
 
 # model_list = [[efficientnet_b0, 32, 'cuda:1']]
 # model_list = [[efficientnet_b1, 32, 'cuda:2']]
 # model_list = [[efficientnet_b2, 32, 'cuda:3']]
 # model_list = [[densnet121d, 24, 'cuda:4']]
 # model_list = [[efficientnet_b3, 24, 'cuda:4']]
-CFG.learning_rate = 3e-5
+# model_list = [[efficientnet_b4, 16, 'cuda:1']]
+
+# model_list = [[mobilenetv3_large_075, 64, 'cuda:5']]
+# model_list = [[mobilenetv3_large_100, 24, 'cuda:2']]
+
+
+# model_list = [[resnext101, 16, 'cuda:0', 7e-5]]
+# model_list = [[seresnet101, 32, 'cuda:1', 3e-4]]
+# model_list = [[seresnext50, 32, 'cuda:2', 3e-5]]
+model_list = [[seresnext101, 16, 'cuda:3', 3e-4]]
 
 train_models_kfold(model_list, skf, df)
